@@ -3,10 +3,10 @@
 
 import Redis from 'ioredis';
 
-const REDIS_PREFIX = 'lb:';
+const REDIS_PREFIX = 'leaderboard:';
 
 function keyLeaderboard(gameId) {
-  return `${REDIS_PREFIX}leaderboard:${gameId}`;
+  return `${REDIS_PREFIX}${gameId}`;
 }
 
 function keyUserScore(userId, gameId) {
@@ -21,7 +21,7 @@ function keyRateLimit(endpoint, userId) {
   return `${REDIS_PREFIX}ratelimit:${endpoint}:${userId}`;
 }
 
-// Create Redis client
+// Create Redis client with connection pool
 const redis = new Redis({
   host: process.env.REDIS_HOST || 'localhost',
   port: parseInt(process.env.REDIS_PORT || '6379', 10),
@@ -32,7 +32,10 @@ const redis = new Redis({
   enableReadyCheck: true,
   lazyConnect: true,
   connectionName: 'leaderboard-api',
-  family: 4
+  family: 4,
+  // Connection pool settings
+  maxConnections: 10,
+  connectTimeout: 10000,
 });
 
 // Connection event handlers
@@ -103,6 +106,17 @@ export const leaderboard = {
     return parseZRangeResults(results, offset);
   },
 
+  // Get bottom N players with scores (ascending)
+  async getBottomPlayers(gameId, limit, offset = 0) {
+    const results = await redis.zrange(
+      keyLeaderboard(gameId),
+      offset,
+      offset + limit - 1,
+      'WITHSCORES'
+    );
+    return parseZRangeResults(results, offset, true);
+  },
+
   // Get players around a specific rank
   async getPlayersAroundRank(gameId, rank, range = 5) {
     const start = Math.max(0, rank - 1 - range);
@@ -116,7 +130,7 @@ export const leaderboard = {
     return parseZRangeResults(results, start);
   },
 
-  // Get players by score range
+  // Get players by score range (descending)
   async getPlayersByScoreRange(gameId, min, max, limit = 50, offset = 0) {
     const results = await redis.zrevrangebyscore(
       keyLeaderboard(gameId),
@@ -126,6 +140,18 @@ export const leaderboard = {
       'WITHSCORES'
     );
     return parseZRangeResults(results, offset);
+  },
+
+  // Get players by score range (ascending)
+  async getPlayersByScoreRangeAsc(gameId, min, max, limit = 50, offset = 0) {
+    const results = await redis.zrangebyscore(
+      keyLeaderboard(gameId),
+      min,
+      max,
+      'LIMIT', offset, limit,
+      'WITHSCORES'
+    );
+    return parseZRangeResults(results, offset, true);
   },
 
   // Get total player count
@@ -141,6 +167,51 @@ export const leaderboard = {
   // Count players in score range
   async countInRange(gameId, min, max) {
     return redis.zcount(keyLeaderboard(gameId), min, max);
+  },
+
+  // Get user percentile (0-100, 100 = top 1%)
+  async getPercentile(gameId, userId) {
+    const rank = await redis.zrevrank(keyLeaderboard(gameId), userId);
+    if (rank === null) return 0;
+    const total = await redis.zcard(keyLeaderboard(gameId));
+    if (total === 0) return 0;
+    return Math.round((1 - (rank + 1) / total) * 100);
+  },
+
+  // Get full rank context in single pipeline
+  async getRankContext(gameId, userId) {
+    const pipeline = redis.pipeline();
+    pipeline.zrevrank(keyLeaderboard(gameId), userId);
+    pipeline.zscore(keyLeaderboard(gameId), userId);
+    pipeline.zcard(keyLeaderboard(gameId));
+    
+    const [[, rank], [, score], [, total]] = await pipeline.exec();
+    
+    if (rank === null) {
+      return { rank: null, score: 0, percentile: 0, totalPlayers: total || 0, nearbyPlayers: [] };
+    }
+    
+    const rank1Indexed = rank + 1;
+    const scoreVal = score ? parseFloat(score) : 0;
+    const totalPlayers = total || 0;
+    const percentile = totalPlayers > 0 ? Math.round((1 - rank1Indexed / totalPlayers) * 100) : 0;
+    
+    // Get nearby players (3 above, 3 below) in same pipeline
+    const nearbyPipeline = redis.pipeline();
+    const start = Math.max(0, rank - 3);
+    const stop = rank + 3;
+    nearbyPipeline.zrevrange(keyLeaderboard(gameId), start, stop, 'WITHSCORES');
+    
+    const [[, nearbyResults]] = await nearbyPipeline.exec();
+    const nearbyPlayers = parseZRangeResults(nearbyResults || [], start);
+    
+    return {
+      rank: rank1Indexed,
+      score: scoreVal,
+      percentile,
+      totalPlayers,
+      nearbyPlayers
+    };
   },
 
   // Batch update multiple scores
@@ -164,7 +235,69 @@ export const leaderboard = {
   // Check if leaderboard exists
   async exists(gameId) {
     return redis.exists(keyLeaderboard(gameId));
-  }
+  },
+
+  // Raw Sorted Set operations
+  async zadd(key, score, member, options) {
+    const args = [key];
+    if (options) args.push(...options);
+    args.push(score, member);
+    return redis.zadd(...args);
+  },
+
+  async zrem(key, member) {
+    return redis.zrem(key, member);
+  },
+
+  async zcard(key) {
+    return redis.zcard(key);
+  },
+
+  async zcount(key, min, max) {
+    return redis.zcount(key, min, max);
+  },
+
+  async zrange(key, start, stop, withScores = false) {
+    const args = [key, start, stop];
+    if (withScores) args.push('WITHSCORES');
+    return redis.zrange(...args);
+  },
+
+  async zrevrange(key, start, stop, withScores = false) {
+    const args = [key, start, stop];
+    if (withScores) args.push('WITHSCORES');
+    return redis.zrevrange(...args);
+  },
+
+  async zrangebyscore(key, min, max, options = {}) {
+    const args = [key, min, max];
+    if (options.limit) args.push('LIMIT', options.limit.offset, options.limit.count);
+    if (options.withScores) args.push('WITHSCORES');
+    return redis.zrangebyscore(...args);
+  },
+
+  async zrevrangebyscore(key, max, min, options = {}) {
+    const args = [key, max, min];
+    if (options.limit) args.push('LIMIT', options.limit.offset, options.limit.count);
+    if (options.withScores) args.push('WITHSCORES');
+    return redis.zrevrangebyscore(...args);
+  },
+
+  async zincrby(key, increment, member) {
+    return redis.zincrby(key, increment, member);
+  },
+
+  async zrank(key, member) {
+    return redis.zrank(key, member);
+  },
+
+  async zrevrank(key, member) {
+    return redis.zrevrank(key, member);
+  },
+
+  async zscore(key, member) {
+    return redis.zscore(key, member);
+  },
 };
 
 // ============================================
@@ -226,6 +359,40 @@ export const cache = {
 };
 
 // ============================================
+// PUB/SUB FOR REALTIME UPDATES (Feature 007)
+// ============================================
+
+export const pubsub = {
+  // Publish score update to game channel
+  async publishScoreUpdate(gameId, data) {
+    const channel = `${REDIS_PREFIX}updates:${gameId}`;
+    return redis.publish(channel, JSON.stringify(data));
+  },
+
+  // Subscribe to game updates
+  subscribeToGame(gameId, callback) {
+    const channel = `${REDIS_PREFIX}updates:${gameId}`;
+    const subscriber = redis.duplicate();
+    subscriber.subscribe(channel);
+    subscriber.on('message', (ch, message) => {
+      if (ch === channel) {
+        try {
+          callback(JSON.parse(message));
+        } catch (e) {
+          console.error('Invalid pub/sub message:', e);
+        }
+      }
+    });
+    return subscriber;
+  },
+
+  // Unsubscribe
+  unsubscribe(subscriber) {
+    return subscriber.unsubscribe();
+  }
+};
+
+// ============================================
 // HEALTH & LIFECYCLE
 // ============================================
 
@@ -254,11 +421,11 @@ export async function shutdownRedis() {
 // HELPERS
 // ============================================
 
-function parseZRangeResults(results, startRank) {
+function parseZRangeResults(results, startRank, ascending = false) {
   const players = [];
   for (let i = 0; i < results.length; i += 2) {
     players.push({
-      rank: startRank + (i / 2) + 1,
+      rank: ascending ? startRank + (i / 2) + 1 : startRank + (i / 2) + 1,
       userId: results[i],
       score: parseFloat(results[i + 1])
     });

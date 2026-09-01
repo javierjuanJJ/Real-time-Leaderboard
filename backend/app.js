@@ -46,11 +46,6 @@ const globalLimiter = rateLimit({
 });
 app.use(globalLimiter);
 
-// Health check (no rate limit)
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
 // API routes
 app.use('/api', routes);
 

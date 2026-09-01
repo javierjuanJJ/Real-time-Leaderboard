@@ -5,6 +5,7 @@
 import { app } from './app.js';
 import { PrismaClient } from '@prisma/client';
 import { connectRedis, shutdownRedis } from './src/services/redis.service.js';
+import { createWebSocketServer } from './src/services/websocket.service.js';
 
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 3000;
@@ -24,11 +25,26 @@ async function startServer() {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`   Health: http://localhost:${PORT}/api/health`);
+      console.log(`   WebSocket: ws://localhost:${PORT}/ws`);
     });
+
+    // Create WebSocket server attached to HTTP server
+    const wss = createWebSocketServer(server);
+    console.log('✓ WebSocket server ready');
+
+    // Make WebSocket server accessible for broadcasting
+    app.set('wss', wss);
 
     // Graceful shutdown
     const shutdown = async (signal) => {
       console.log(`\n${signal} received. Shutting down gracefully...`);
+      
+      // Close WebSocket connections
+      wss.clients.forEach(client => {
+        if (client.readyState === 1) { // WebSocket.OPEN
+          client.close(1001, 'Server shutting down');
+        }
+      });
       
       server.close(async () => {
         console.log('✓ HTTP server closed');
