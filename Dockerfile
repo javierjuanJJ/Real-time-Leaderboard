@@ -5,8 +5,9 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Install dependencies first (better layer caching)
+# --legacy-peer-deps: npm >=10 bug workaround for peer dependency resolution errors
 COPY backend/package.json ./
-RUN npm install
+RUN npm install --legacy-peer-deps
 
 # Copy source and generate Prisma client
 COPY backend/ ./
