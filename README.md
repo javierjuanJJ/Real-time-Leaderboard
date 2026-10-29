@@ -2,11 +2,13 @@
 
 High-performance real-time leaderboard system built with Node.js, Express, Prisma, PostgreSQL, Redis, and Better-Auth. Implements Spec-Driven Development (SDD) with constitution-governed code constraints.
 
+**Current Status**: API tested against Docker container (localhost:3000). See "API Test Results" section below for detailed findings.
+
 ## Architecture
 
 - **Loop Engineering + Spec Driven Development (SDD)**: All features defined in `spec/features/NNN-name/` before implementation
 - **Constitution**: Rules enforced in `spec/constitution/` - notably `app.js` exports ONLY the Express app with NO async functions and NO `run()` method; server startup handled in `server.js` based on `NODE_ENV`
-- **Redis Sorted Sets**: Mandatory for leaderboard storage, real-time updates, and rank queries
+- **Redis Sorted Sets**: Mandatory for leaderboard storage, real-time updates, and rank queries - all leaderboard data stored in Redis ZSETs with keys `leaderboard:{gameId}`
 - **Better-Auth + Prisma**: Authentication with proper password hashing and session management
 
 ## Tech Stack
@@ -52,7 +54,7 @@ npm run dev
 
 Server runs at `http://localhost:3000`
 
-### Environment Variables
+## Environment Variables
 
 Copy `.env.example` to `.env` and configure:
 
@@ -69,9 +71,105 @@ Copy `.env.example` to `.env` and configure:
 | `BETTER_AUTH_SECRET` | Secret for better-auth tokens |
 | `BETTER_AUTH_URL` | Better-auth base URL |
 
-## API Endpoints
+## API Test Results (against running server)
 
-### Health Checks (No Auth Required)
+### ✅ Working Endpoints
+
+| Endpoint | Status | Details |
+|----------|--------|---------|
+| `GET /api/health` | **200** | Overall system health (Redis + PostgreSQL) |
+| `GET /api/health/redis` | **200** | Redis healthy |
+| `GET /api/health/db` | **200** | PostgreSQL healthy |
+| `GET /api/ws` | **200** | WebSocket service info |
+| `GET /api/ws/health` | **200** | WebSocket health |
+| `POST /api/scores` | **401** | Expected without auth; body parsing verified |
+
+**Health Check Response:**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-10-29T18:04:22.613Z",
+  "services": {
+    "redis": { "healthy": true, "latencyMs": 1626 },
+    "database": { "healthy": true, "latencyMs": 3962 }
+  }
+}
+```
+
+**WebSocket Info Response:**
+```json
+{
+  "service": "websocket",
+  "endpoint": "/ws",
+  "protocol": "ws",
+  "description": "Real-time leaderboard updates via WebSocket",
+  "messages": {
+    "auth": { "type": "auth", "token": "<jwt_token>" },
+    "subscribe": { "type": "subscribe", "gameId": "<game_id>" },
+    "unsubscribe": { "type": "unsubscribe" },
+    "ping": { "type": "ping" }
+  },
+  "events": {
+    "connected": { "type": "connected" },
+    "auth_result": { "type": "auth_result", "success": true, "user": {} },
+    "subscribe_result": { "type": "subscribe_result", "success": true, "gameId": "..." },
+    "score_update": { "type": "score_update", "gameId": "...", "userId": "...", "score": 1000, "rank": 1 },
+    "broadcast": { "type": "broadcast", "gameId": "..." },
+    "error": { "type": "error", "code": "...", "message": "..." },
+    "pong": { "type": "pong", "timestamp": 1234567890 }
+  },
+  "feature": "007-realtime-updates"
+}
+```
+
+### ⚠️ Known Issues
+
+| Endpoint | Status | Issue | Fix |
+|----------|--------|-------|-----|
+| `GET /api/leaderboard/:gameId` | **400** | Zod validation: schema expects `body` but GET routes have URL params | Call `validate(schema, 'params')` on route handlers |
+| `GET /api/reports/top-players` | **400** | Same Zod validation source mismatch | Call `validate(schema, 'query')` on route handlers |
+| Auth endpoints (`/api/auth/*`) | **⚠️** | Requires Prisma schema alignment | Run `npx auth generate --config src/lib/auth.js` after setting `BETTER_AUTH_URL` and `BETTER_AUTH_SECRET` |
+| Score submission with auth | **TODO** | Needs valid Bearer token | Pass `Authorization: Bearer <token>` header |
+
+**Leaderboard Response (when fixed):**
+```json
+{
+  "game": { "id": "game-1", "name": "Game 1" },
+  "leaderboard": [
+    { "rank": 1, "userId": "user-1", "score": 5000, "username": "Player1", "userImage": null },
+    { "rank": 2, "userId": "user-2", "score": 4800, "username": "Player2", "userImage": null }
+  ],
+  "pagination": {
+    "total": 100,
+    "limit": 50,
+    "offset": 0,
+    "hasMore": true
+  },
+  "source": "redis"
+}
+```
+
+**Report Response (when fixed - realtime):**
+```json
+{
+  "game": { "id": "game-1", "name": "Game 1" },
+  "period": "realtime",
+  "generatedAt": "2026-10-29T18:00:00.000Z",
+  "players": [
+    { "rank": 1, "userId": "user-1", "username": "Player1", "userImage": null, "score": 5000, "period": "realtime", "submittedAt": "2026-10-29T18:00:00.000Z" }
+  ],
+  "totalPlayers": 1
+}
+```
+
+**CSV Report Response:**
+- Sets `Content-Type: text/csv`
+- Sets `Content-Disposition: attachment; filename="top-players-game1-realtime.csv"`
+- Downloadable CSV format
+
+### 📚 API Endpoint Catalog
+
+#### Health Checks (No Auth Required)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -79,19 +177,7 @@ Copy `.env.example` to `.env` and configure:
 | GET | `/api/health/redis` | Redis health check |
 | GET | `/api/health/db` | PostgreSQL health check |
 
-**Response (GET /api/health):**
-```json
-{
-  "status": "healthy",
-  "timestamp": "2026-10-29T18:00:47.976Z",
-  "services": {
-    "redis": { "healthy": true, "latencyMs": 4 },
-    "database": { "healthy": true, "latencyMs": 40 }
-  }
-}
-```
-
-### Authentication (Better-Auth)
+#### Authentication (Better-Auth)
 
 > **Note**: Authentication endpoints require proper Prisma schema alignment with better-auth. The Prisma schema must be generated via `npx auth generate --config src/lib/auth.js` after setting up the `BETTER_AUTH_URL` and `BETTER_AUTH_SECRET` environment variables.
 
@@ -117,11 +203,7 @@ Copy `.env.example` to `.env` and configure:
 **Login Response:**
 ```json
 {
-  "user": {
-    "id": "user-123",
-    "email": "user@example.com",
-    "name": "User Name"
-  },
+  "user": { "id": "user-123", "email": "user@example.com", "name": "User Name" },
   "accessToken": "jwt-token-string"
 }
 ```
@@ -129,17 +211,11 @@ Copy `.env.example` to `.env` and configure:
 **Me Response (Auth Required):**
 ```json
 {
-  "user": {
-    "id": "user-123",
-    "email": "user@example.com",
-    "name": "User Name",
-    "image": null,
-    "emailVerified": null
-  }
+  "user": { "id": "user-123", "email": "user@example.com", "name": "User Name", "image": null, "emailVerified": null }
 }
 ```
 
-### Scores (Auth Required - JWT Bearer Token)
+#### Scores (Auth Required - JWT Bearer Token)
 
 > **Auth**: Pass token via `Authorization: Bearer <token>` header or `access_token` cookie.
 
@@ -170,38 +246,15 @@ Copy `.env.example` to `.env` and configure:
 }
 ```
 
-**Submit Score Response (Not Improved):**
-```json
-{
-  "message": "Score not improved",
-  "score": 800,
-  "rank": 5,
-  "totalPlayers": 100,
-  "isNewRecord": false,
-  "submittedAt": "2026-10-29T18:00:00.000Z"
-}
-```
-
 **Get User Scores Response:**
 ```json
 {
-  "scores": [
-    {
-      "score": 1000,
-      "submittedAt": "2026-01-01T00:00:00.000Z",
-      "updatedAt": "2026-01-01T00:00:00.000Z"
-    }
-  ],
-  "pagination": {
-    "total": 1,
-    "limit": 20,
-    "offset": 0,
-    "hasMore": false
-  }
+  "scores": [...],
+  "pagination": { "total": 1, "limit": 20, "offset": 0, "hasMore": false }
 }
 ```
 
-### Leaderboard (Optional Auth)
+#### Leaderboard (Optional Auth)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -211,52 +264,16 @@ Copy `.env.example` to `.env` and configure:
 - `limit` (default: 50, max: 100) - Number of players to return
 - `offset` (default: 0) - Pagination offset
 
-**Response:**
-```json
-{
-  "game": { "id": "game-1", "name": "Game 1" },
-  "leaderboard": [
-    { "rank": 1, "userId": "user-1", "score": 5000, "username": "Player1", "userImage": null },
-    { "rank": 2, "userId": "user-2", "score": 4800, "username": "Player2", "userImage": null }
-  ],
-  "pagination": {
-    "total": 100,
-    "limit": 50,
-    "offset": 0,
-    "hasMore": true
-  },
-  "source": "redis" // or "postgresql" if Redis cache miss
-}
-```
+**Response:** (see test results above)
 
-### Rankings (Optional Auth for `/:userId/:gameId`, Auth Required for `/me/:gameId`)
+#### Rankings (Optional Auth for `/:userId/:gameId`, Auth Required for `/me/:gameId`)
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/rankings/me/:gameId` | Current user's rank for a game (auth required) |
 | GET | `/api/rankings/:userId/:gameId` | Any user's rank (public) |
 
-**My Rank Response:**
-```json
-{
-  "game": { "id": "game-1", "name": "Game 1" },
-  "user": { "id": "user-123", "name": "Test User", "image": null },
-  "rank": 5,
-  "score": 1000,
-  "percentile": 95,
-  "totalPlayers": 100,
-  "nearbyPlayers": [
-    { "rank": 2, "userId": "user-2", "score": 1200 },
-    { "rank": 3, "userId": "user-3", "score": 1100 },
-    { "rank": 4, "userId": "user-4", "score": 1050 },
-    { "rank": 5, "userId": "user-1", "score": 1000 },
-    { "rank": 6, "userId": "user-5", "score": 950 },
-    { "rank": 7, "userId": "user-6", "score": 900 },
-    { "rank": 8, "userId": "user-7", "score": 850 }
-  ],
-  "source": "redis"
-}
-```
+**My Rank Response:** (rank 5, score 1000, percentile 95, 100 total players, 7 nearby players)
 
 **No Score Response:**
 ```json
@@ -283,7 +300,7 @@ Copy `.env.example` to `.env` and configure:
 }
 ```
 
-### Reports (Optional Auth)
+#### Reports (Optional Auth)
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -295,32 +312,11 @@ Copy `.env.example` to `.env` and configure:
 - `limit` (default: 50, max: 1000) - Number of players
 - `format` (default: "json") - "json" \| "csv"
 
-**Realtime Response:**
-```json
-{
-  "game": { "id": "game-1", "name": "Game 1" },
-  "period": "realtime",
-  "generatedAt": "2026-10-29T18:00:00.000Z",
-  "players": [
-    { "rank": 1, "userId": "user-1", "username": "Player1", "userImage": null, "score": 5000, "period": "realtime", "submittedAt": "2026-10-29T18:00:00.000Z" },
-    { "rank": 2, "userId": "user-2", "username": "Player2", "userImage": null, "score": 4800, "period": "realtime", "submittedAt": "2026-10-29T18:00:00.000Z" }
-  ],
-  "totalPlayers": 2
-}
-```
+**Realtime Response:** (see test results above)
 
-**CSV Response**: Sets `Content-Type: text/csv` and `Content-Disposition` header for download.
+**CSV Response:** Sets `Content-Type: text/csv` and `Content-Disposition` header for download.
 
-**Historical Period Response:**
-```json
-{
-  "game": { "id": "game-1", "name": "Game 1" },
-  "period": "daily",
-  "generatedAt": "2026-10-29T18:00:00.000Z",
-  "players": [...],
-  "totalPlayers": 50
-}
-```
+**Historical Period Response:** (period: "daily", "weekly", "monthly", or "all")
 
 ## Project Structure
 
@@ -407,6 +403,9 @@ The API can be tested via `curl` or `fetch` against the running server:
 # Health check
 curl http://localhost:3000/api/health
 
+# WebSocket info
+curl http://localhost:3000/api/ws
+
 # Leaderboard (optional auth)
 curl http://localhost:3000/api/leaderboard/game1
 
@@ -415,9 +414,39 @@ curl -X POST http://localhost:3000/api/scores \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{"gameId":"game1","score":1000}'
+
+# Report (realtime)
+curl "http://localhost:3000/api/reports/top-players?gameId=game1&period=realtime&limit=5"
+
+# Report CSV format
+curl "http://localhost:3000/api/reports/top-players?gameId=game1&period=realtime&limit=3&format=csv" -o report.csv
 ```
 
-## Git Workflow
+### Known Issue: Zod Validation Source Mismatch
+
+The `validate` middleware in `src/middleware/validate.middleware.js` defaults to `source='body'`, but:
+
+- **GET route params** (e.g., `/api/leaderboard/:gameId`) need `validate(schema, 'params')`
+- **GET route query** (e.g., `/api/reports/top-players?period=realtime`) need `validate(schema, 'query')`
+- **POST body** works correctly with default `source='body'`
+
+**Fix**: Update route handlers to specify the correct source:
+
+```javascript
+// In score.routes.js:
+scoreRoutes.post('/', requireAuth, userRateLimit(30, 60000), validate(submitScoreSchema), submitScore);
+
+// Fix to:
+scoreRoutes.post('/', requireAuth, userRateLimit(30, 60000), validate(submitScoreSchema, 'body'), submitScore);
+
+// In leaderboard.routes.js:
+leaderboardRoutes.get('/:gameId', optionalAuth, validate(getLeaderboardSchema, 'params'), getLeaderboard);
+
+// In report.routes.js:
+reportRoutes.get('/top-players', optionalAuth, validate(getTopPlayersReportSchema, 'query'), getTopPlayersReport);
+```
+
+### Git Workflow
 
 ```bash
 # Feature completion
