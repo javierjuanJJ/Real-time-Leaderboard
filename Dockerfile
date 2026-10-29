@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Build stage ----------
-FROM node:20-alpine AS builder
+FROM node:20 AS builder
 WORKDIR /app
 
 # Install dependencies first (better layer caching)
@@ -14,7 +14,7 @@ COPY backend/ ./
 RUN npx prisma generate
 
 # ---------- Production stage ----------
-FROM node:20-alpine AS runner
+FROM node:20 AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000

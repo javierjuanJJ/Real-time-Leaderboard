@@ -21,10 +21,10 @@ wsRoutes.get('/', optionalAuth, (req, res) => {
     },
     events: {
       connected: { type: 'connected' },
-      auth_result: { type: 'auth_result', success: true/false, user: {...} },
-      subscribe_result: { type: 'subscribe_result', success: true/false, gameId: '...' },
+      auth_result: { type: 'auth_result', success: true, user: {} },
+      subscribe_result: { type: 'subscribe_result', success: true, gameId: '...' },
       score_update: { type: 'score_update', gameId: '...', userId: '...', score: 1000, rank: 1 },
-      broadcast: { type: 'broadcast', gameId: '...', ... },
+      broadcast: { type: 'broadcast', gameId: '...' },
       error: { type: 'error', code: '...', message: '...' },
       pong: { type: 'pong', timestamp: 1234567890 }
     },

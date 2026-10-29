@@ -1,11 +1,13 @@
 // backend/src/lib/auth.js
 // Better-Auth configuration
 
-import { betterAuth } from 'better-auth';
+import { betterAuth as betterAuthClient } from 'better-auth';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
-import { prisma } from '../../server.js';
+import { PrismaClient } from '@prisma/client';
 
-export const betterAuth = betterAuth({
+const prisma = new PrismaClient();
+
+export const betterAuth = betterAuthClient({
   database: prismaAdapter(prisma, {
     provider: 'postgresql'
   }),
@@ -49,5 +51,3 @@ export const betterAuth = betterAuth({
     level: process.env.NODE_ENV === 'production' ? 'error' : 'debug'
   }
 });
-
-export default betterAuth;

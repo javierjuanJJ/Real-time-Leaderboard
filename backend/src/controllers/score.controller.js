@@ -4,7 +4,7 @@
 import { prisma } from '../../server.js';
 import { leaderboard, cache } from '../services/redis.service.js';
 import { asyncHandler } from '../middleware/error.middleware.js';
-import { NotFoundError, BadRequestError } from '../middleware/error.middleware.js';
+import { NotFoundError, ValidationError } from '../middleware/error.middleware.js';
 
 function enrichPlayersWithProfiles(players) {
   if (!players.length) return Promise.resolve(players);

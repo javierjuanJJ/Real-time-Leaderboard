@@ -34,8 +34,8 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: ../Dockerfile
+      context: .
+      dockerfile: Dockerfile
     container_name: leaderboard-backend
     ports:
       - "3000:3000"
@@ -55,9 +55,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ./backend:/app
-    working_dir: /app
 
 volumes:
   postgres-data:
